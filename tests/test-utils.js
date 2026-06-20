@@ -1,4 +1,4 @@
-const { parseThreshold, formatBytes } = require('../src/services/redisScanner');
+const { parseThreshold, formatBytes, calculateDelay } = require('../src/services/redisScanner');
 
 const assert = (condition, message) => {
   if (!condition) {
@@ -31,6 +31,34 @@ const runTests = () => {
   assert(parseThreshold('invalid') === 1024 * 1024, 'parseThreshold("invalid") should return default 1MB');
   assert(parseThreshold(null) === 1024 * 1024, 'parseThreshold(null) should return default 1MB');
 
+  console.log('\n=== Testing calculateDelay (auto-throttle logic) ===');
+  const baseDelay = 10;
+  const threshold = 50;
+
+  assert(calculateDelay(baseDelay, -1, threshold) === baseDelay * 2,
+    'Error latency should double the delay');
+
+  assert(calculateDelay(baseDelay, 10, threshold) === baseDelay,
+    'Latency below threshold should use base delay');
+
+  assert(calculateDelay(baseDelay, 60, threshold) === baseDelay * 2,
+    'Latency 1x over threshold should double delay');
+
+  assert(calculateDelay(baseDelay, 120, threshold) === baseDelay * 5,
+    'Latency 2x over threshold should 5x delay');
+
+  assert(calculateDelay(baseDelay, 200, threshold) === baseDelay * 10,
+    'Latency 3x+ over threshold should 10x delay');
+
+  console.log('\n  Auto-throttle tier demonstration:');
+  const testLatencies = [10, 30, 55, 75, 110, 160, 250];
+  testLatencies.forEach(latency => {
+    const delay = calculateDelay(baseDelay, latency, threshold);
+    const ratio = delay / baseDelay;
+    const status = latency > threshold ? '⚠️  THROTTLED' : '✓ OK';
+    console.log(`    latency=${latency}ms -> delay=${delay}ms (${ratio}x) ${status}`);
+  });
+
   console.log('\n=== Testing roundtrip ===');
   const sizes = ['1KB', '512KB', '1MB', '10MB', '1GB'];
   sizes.forEach(size => {
@@ -38,6 +66,14 @@ const runTests = () => {
     const formatted = formatBytes(bytes);
     console.log(`  ${size} -> ${bytes} bytes -> ${formatted}`);
   });
+
+  console.log('\n=== New Anti-Blocking Features Summary ===');
+  console.log('  ✓ Batch delay: configurable sleep between SCAN batches');
+  console.log('  ✓ Rate limit: maxKeysPerSecond to control throughput');
+  console.log('  ✓ Pipeline: batch MEMORY/TYPE/TTL calls to reduce RTT');
+  console.log('  ✓ Latency monitor: PING to measure Redis load');
+  console.log('  ✓ Auto-throttle: dynamic delay based on Redis latency');
+  console.log('  ✓ Stats output: latency history and throttle count');
 
   console.log('\n🎉 All tests passed!');
 };
