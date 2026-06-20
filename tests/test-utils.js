@@ -1,4 +1,4 @@
-const { parseThreshold, formatBytes, calculateDelay } = require('../src/services/redisScanner');
+const { parseThreshold, formatBytes, calculateDelay, groupByType } = require('../src/services/redisScanner');
 
 const assert = (condition, message) => {
   if (!condition) {
@@ -57,6 +57,61 @@ const runTests = () => {
     const ratio = delay / baseDelay;
     const status = latency > threshold ? '⚠️  THROTTLED' : '✓ OK';
     console.log(`    latency=${latency}ms -> delay=${delay}ms (${ratio}x) ${status}`);
+  });
+
+  console.log('\n=== Testing groupByType (type-grouped statistics) ===');
+
+  const emptyResult = groupByType([]);
+  assert(Array.isArray(emptyResult) && emptyResult.length === 0,
+    'groupByType([]) should return empty array');
+
+  const mockBigKeys = [
+    { key: 's1', type: 'string', memoryBytes: 2 * 1024 * 1024, memoryFormatted: '2 MB', ttl: null },
+    { key: 's2', type: 'string', memoryBytes: 1 * 1024 * 1024, memoryFormatted: '1 MB', ttl: null },
+    { key: 's3', type: 'string', memoryBytes: 3 * 1024 * 1024, memoryFormatted: '3 MB', ttl: 3600 },
+    { key: 'h1', type: 'hash',   memoryBytes: 5 * 1024 * 1024, memoryFormatted: '5 MB', ttl: null },
+    { key: 'h2', type: 'hash',   memoryBytes: 2 * 1024 * 1024, memoryFormatted: '2 MB', ttl: null },
+    { key: 'l1', type: 'list',   memoryBytes: 4 * 1024 * 1024, memoryFormatted: '4 MB', ttl: null },
+    { key: 'z1', type: 'zset',   memoryBytes: 512 * 1024,      memoryFormatted: '512 KB', ttl: null },
+    { key: 'st1', type: 'set',   memoryBytes: 1.5 * 1024 * 1024, memoryFormatted: '1.5 MB', ttl: null }
+  ];
+
+  const stats = groupByType(mockBigKeys);
+
+  assert(stats.length === 5,
+    `groupByType should return 5 types with keys, got ${stats.length}`);
+
+  assert(stats[0].type === 'hash',
+    'First group should be hash (highest total memory)');
+
+  const hashStat = stats.find(s => s.type === 'hash');
+  assert(hashStat.count === 2, 'hash should have 2 keys');
+  assert(hashStat.totalMemoryBytes === 7 * 1024 * 1024, 'hash total memory should be 7MB');
+  assert(hashStat.topKey.key === 'h1', 'hash top key should be h1');
+  assert(hashStat.topKey.memoryBytes === 5 * 1024 * 1024, 'hash top key memory should be 5MB');
+
+  const stringStat = stats.find(s => s.type === 'string');
+  assert(stringStat.count === 3, 'string should have 3 keys');
+  assert(stringStat.totalMemoryBytes === 6 * 1024 * 1024, 'string total memory should be 6MB');
+  assert(stringStat.topKey.key === 's3', 'string top key should be s3 (3MB)');
+
+  const listStat = stats.find(s => s.type === 'list');
+  assert(listStat.count === 1, 'list should have 1 key');
+  assert(listStat.avgMemoryBytes === 4 * 1024 * 1024, 'list avg memory should be 4MB');
+
+  const totalMem = mockBigKeys.reduce((sum, k) => sum + k.memoryBytes, 0);
+  const percentageSum = stats.reduce((sum, s) => sum + s.percentage, 0);
+  assert(Math.abs(percentageSum - 100) < 0.1,
+    `Percentage sum should be ~100, got ${percentageSum.toFixed(2)}`);
+
+  const unknownKey = { key: 'u1', type: 'unknown_type', memoryBytes: 1024, memoryFormatted: '1 KB', ttl: null };
+  const statsWithUnknown = groupByType([unknownKey]);
+  assert(statsWithUnknown.length === 1 && statsWithUnknown[0].type === 'unknown_type',
+    'Unknown types should be included in results');
+
+  console.log('\n  Type statistics summary:');
+  stats.forEach(s => {
+    console.log(`    ${s.type.padEnd(8)} count=${s.count}  total=${s.totalMemoryFormatted.padEnd(8)} avg=${s.avgMemoryFormatted.padEnd(8)} top=${s.topKey.key} (${s.percentage}%)`);
   });
 
   console.log('\n=== Testing roundtrip ===');

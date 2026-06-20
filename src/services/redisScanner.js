@@ -43,6 +43,48 @@ const calculateDelay = (baseDelayMs, currentLatencyMs, latencyThresholdMs) => {
   return baseDelayMs;
 };
 
+const REDIS_TYPES = ['string', 'list', 'hash', 'set', 'zset', 'stream', 'module'];
+
+const groupByType = (bigKeys) => {
+  const totalMemory = bigKeys.reduce((sum, k) => sum + k.memoryBytes, 0);
+  const groups = {};
+
+  for (const type of REDIS_TYPES) {
+    groups[type] = { count: 0, totalMemoryBytes: 0, topKey: null };
+  }
+
+  for (const k of bigKeys) {
+    const t = k.type || 'unknown';
+    if (!groups[t]) {
+      groups[t] = { count: 0, totalMemoryBytes: 0, topKey: null };
+    }
+    groups[t].count += 1;
+    groups[t].totalMemoryBytes += k.memoryBytes;
+    if (!groups[t].topKey || k.memoryBytes > groups[t].topKey.memoryBytes) {
+      groups[t].topKey = { key: k.key, memoryBytes: k.memoryBytes, memoryFormatted: k.memoryFormatted };
+    }
+  }
+
+  const result = [];
+  for (const [type, stat] of Object.entries(groups)) {
+    if (stat.count === 0) continue;
+    result.push({
+      type,
+      count: stat.count,
+      totalMemoryBytes: stat.totalMemoryBytes,
+      totalMemoryFormatted: formatBytes(stat.totalMemoryBytes),
+      percentage: totalMemory > 0 ? parseFloat(((stat.totalMemoryBytes / totalMemory) * 100).toFixed(2)) : 0,
+      avgMemoryBytes: Math.round(stat.totalMemoryBytes / stat.count),
+      avgMemoryFormatted: formatBytes(Math.round(stat.totalMemoryBytes / stat.count)),
+      topKey: stat.topKey
+    });
+  }
+
+  result.sort((a, b) => b.totalMemoryBytes - a.totalMemoryBytes);
+
+  return result;
+};
+
 const processKeysInBatch = async (client, keys, thresholdBytes) => {
   if (keys.length === 0) return [];
 
@@ -185,6 +227,8 @@ const scanBigKeys = async (options = {}) => {
 
     bigKeys.sort((a, b) => b.memoryBytes - a.memoryBytes);
 
+    const typeStats = groupByType(bigKeys);
+
     const totalDuration = Date.now() - startTime;
     const avgLatency = latencyHistory.length > 0
       ? latencyHistory.reduce((sum, l) => sum + (l.latencyMs > 0 ? l.latencyMs : 0), 0) / latencyHistory.filter(l => l.latencyMs > 0).length
@@ -209,6 +253,7 @@ const scanBigKeys = async (options = {}) => {
         },
         totalScanned: scannedCount,
         bigKeysCount: bigKeys.length,
+        typeStats,
         totalMemoryBytes: bigKeys.reduce((sum, k) => sum + k.memoryBytes, 0),
         totalMemoryFormatted: formatBytes(bigKeys.reduce((sum, k) => sum + k.memoryBytes, 0)),
         durationMs: totalDuration,
@@ -246,5 +291,6 @@ module.exports = {
   formatBytes,
   calculateDelay,
   measureLatency,
-  processKeysInBatch
+  processKeysInBatch,
+  groupByType
 };
